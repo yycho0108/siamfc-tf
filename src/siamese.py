@@ -65,6 +65,41 @@ def build_tracking_graph(final_score_sz, design, env):
         method=tf.image.ResizeMethod.BICUBIC, align_corners=True)
     return filename, image, templates_z, scores_up
 
+def build_tracking_graph_2(final_score_sz, design, env):
+    # Make a queue of file names
+    # filename_queue = tf.train.string_input_producer(frame_name_list, shuffle=False, capacity=num_frames)
+    # image_reader = tf.WholeFileReader()
+    # # Read a whole file from the queue
+    # image_name, image_file = image_reader.read(filename_queue)
+
+    image = tf.placeholder(tf.float32, [None,None,3])
+    frame_sz = tf.shape(image)
+    # used to pad the crops
+    if design.pad_with_image_mean:
+        avg_chan = tf.reduce_mean(image, axis=(0,1), name='avg_chan')
+    else:
+        avg_chan = None
+    # pad with if necessary
+    frame_padded_z, npad_z = pad_frame(image, frame_sz, pos_x_ph, pos_y_ph, z_sz_ph, avg_chan)
+    frame_padded_z = tf.cast(frame_padded_z, tf.float32)
+    # extract tensor of z_crops
+    z_crops = extract_crops_z(frame_padded_z, npad_z, pos_x_ph, pos_y_ph, z_sz_ph, design.exemplar_sz)
+    frame_padded_x, npad_x = pad_frame(image, frame_sz, pos_x_ph, pos_y_ph, x_sz2_ph, avg_chan)
+    frame_padded_x = tf.cast(frame_padded_x, tf.float32)
+    # extract tensor of x_crops (3 scales)
+    x_crops = extract_crops_x(frame_padded_x, npad_x, pos_x_ph, pos_y_ph, x_sz0_ph, x_sz1_ph, x_sz2_ph, design.search_sz)
+    # use crops as input of (MatConvnet imported) pre-trained fully-convolutional Siamese net
+    template_z, templates_x, p_names_list, p_val_list = _create_siamese(os.path.join(env.root_pretrained,design.net), x_crops, z_crops)
+    template_z = tf.squeeze(template_z)
+    templates_z = tf.stack([template_z, template_z, template_z])
+    # compare templates via cross-correlation
+    scores = _match_templates(templates_z, templates_x, p_names_list, p_val_list)
+    # upsample the score maps
+    scores_up = tf.image.resize_images(scores, [final_score_sz, final_score_sz],
+        method=tf.image.ResizeMethod.BICUBIC, align_corners=True)
+    print 'ss', scores_up.shape
+    return image, templates_z, scores_up
+
 
 # import pretrained Siamese network from matconvnet
 def _create_siamese(net_path, net_x, net_z):
@@ -150,11 +185,14 @@ def _match_templates(net_z, net_x, params_names_list, params_values_list):
     # assert C==Cx, ('Z and X should have same Channels number')
     net_z = tf.reshape(net_z, (Hz, Wz, B*C, 1))
     net_x = tf.reshape(net_x, (1, Hx, Wx, B*C))
+    print 'nzs', net_z.shape
+    print 'nxs', net_x.shape
     net_final = tf.nn.depthwise_conv2d(net_x, net_z, strides=[1,1,1,1], padding='VALID')
     # final is [1, Hf, Wf, BC]
     net_final = tf.concat(tf.split(net_final, 3, axis=3), axis=0)
     # final is [B, Hf, Wf, C]
     net_final = tf.expand_dims(tf.reduce_sum(net_final, axis=3), axis=3)
+    print 'ns', net_final.shape
     # final is [B, Hf, Wf, 1]
     if _bnorm_adjust:
         bn_beta = params_values_list[params_names_list.index('fin_adjust_bnb')]
@@ -168,4 +206,6 @@ def _match_templates(net_z, net_x, params_names_list, params_values_list):
                                                 moving_variance_initializer=tf.constant_initializer(bn_moving_variance),
                                                 training=False, trainable=False)
 
+
+    print 'ns', net_final.shape
     return net_final
