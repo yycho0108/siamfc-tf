@@ -9,8 +9,7 @@ import tensorflow as tf
 import cv2
 import rospy
 
-from timer import Timer
-
+import time
 import src.siamese as siam
 from src.parse_arguments import parse_arguments
 
@@ -42,7 +41,7 @@ class SiamParams(object):
             scale_lr = 0.59,
             scale_min = 0.2,
             scale_max = 5,
-            thresh_fail = 0.24
+            thresh_fail = 0.25
             ):
         self.response_up = response_up
         self.window_influence = window_influence
@@ -190,7 +189,7 @@ def mouse_cb(event, x, y, f, p):
             pos_y += target_h/2
             initialized = True
 
-def init_bbox(image_):
+def init_bbox(image_, winname='image'):
     global drag, pos_x, pos_y, target_w, target_h, initialized
     
     initialized = False
@@ -200,7 +199,7 @@ def init_bbox(image_):
     cv2.setMouseCallback('image', mouse_cb)
 
     while not initialized:
-        cv2.imshow('image', image_)
+        cv2.imshow(winname, image_)
         cv2.waitKey(10)
         continue
     bbox_ = (pos_x, pos_y, target_w, target_h) #cx,cy,w,h
@@ -227,16 +226,20 @@ def main():
             ret, image_ = cam.read()
             if not ret:
                 break
-            with Timer('siam'):
-                bbox_ = tracker.update(sess, image_) 
+
+            start = time.time()
+            bbox_ = tracker.update(sess, image_) 
+            fps = 1.0/(time.time() - start)
 
             if bbox_ is None:
                 bbox_ = init_bbox(image_)
                 tracker.initialize(sess, image_, bbox_)
-
-            x, y, w, h = map(int, bbox_)
-            cv2.rectangle(image_, (x,y), (x+w,y+h), (255,0,0), 2)
-            cv2.imshow('track', image_)
+            else:
+                x, y, w, h = map(int, bbox_)
+                cv2.rectangle(image_, (x,y), (x+w,y+h), (255,0,0), 2)
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                cv2.putText(image_,'fps:%d'%fps,(0,20),font,0.5,(0,0,255),1)
+                cv2.imshow('image', image_)
             if cv2.waitKey(10) == 27:
                 break
 
